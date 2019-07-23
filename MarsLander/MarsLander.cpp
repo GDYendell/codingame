@@ -12,10 +12,25 @@ int main()
 {
     int N; // the number of points used to draw the surface of Mars.
     std::cin >> N; std::cin.ignore();
+    
+    std::vector<int> landscapeX(N), landscapeY(N);
+    int landingZoneLeft, landingZoneRight, landingZoneHeight;
     for (int i = 0; i < N; i++) {
         int landX; // X coordinate of a surface point. (0 to 6999)
         int landY; // Y coordinate of a surface point. By linking all the points together in a sequential fashion, you form the surface of Mars.
         std::cin >> landX >> landY; std::cin.ignore();
+        landscapeX[i] = landX;
+        landscapeY[i] = landY;
+        
+        std::cerr << "(" << landX << ", " << landY << ")";
+        
+        if (landY == landscapeY[i - 1]) {
+            landingZoneLeft = landX;
+            landingZoneRight = landscapeX[i - 1];
+            landingZoneHeight = landY;
+            std::cerr << " <-- Landing Zone";
+        }
+        std::cerr << std::endl;
     }
 
     // game loop

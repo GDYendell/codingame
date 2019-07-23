@@ -7,9 +7,21 @@
  * Save the Planet.
  * Use less Fossil Fuel.
  **/
+ 
+ 
 
 int main()
 {
+    int X;
+    int Y;
+    int HS; // the horizontal speed (in m/s), can be negative.
+    int VS; // the vertical speed (in m/s), can be negative.
+    int F; // the quantity of remaining fuel in liters.
+    int R; // the rotation angle in degrees (-90 to 90).
+    int P; // the thrust power (0 to 4).
+
+    int direction;
+
     int N; // the number of points used to draw the surface of Mars.
     std::cin >> N; std::cin.ignore();
     
@@ -35,25 +47,20 @@ int main()
 
     // game loop
     while (1) {
-        int X;
-        int Y;
-        int HS; // the horizontal speed (in m/s), can be negative.
-        int VS; // the vertical speed (in m/s), can be negative.
-        int F; // the quantity of remaining fuel in liters.
-        int R; // the rotation angle in degrees (-90 to 90).
-        int P; // the thrust power (0 to 4).
         std::cin >> X >> Y >> HS >> VS >> F >> R >> P; std::cin.ignore();
 
         std::cerr << "Y: " << Y << std::endl;
+        
+        direction = HS/abs(HS);
 
-        if (Y < 500) {
+        if (Y < landingZoneHeight + 300) {
             R = 0;
             P = 4;
         } else if (500 < Y && Y < 1750) {
-            R = 20;
+            R = direction * 20;
             P = 4;
         } else {
-            R = -20;
+            R = - direction * 20;
             P = 3;
         }
 

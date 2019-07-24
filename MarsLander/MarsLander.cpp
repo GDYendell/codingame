@@ -11,6 +11,9 @@
  
 #define GRAVITY -3.711;
 #define PI 3.14159265
+
+#define MAX_VX 20
+#define MAX_VY 40
  
 typedef struct Demand {
     int power;
@@ -22,7 +25,7 @@ class PIDController {
 
 public:
     PIDController(int targetX, int targetY, int dT, double kP, double kI, double kD);
-    Demand calculateDemand(int positionX, int positionY);
+    Demand calculateDemand(int currentX, int currentY, int currentVX, int currentVY, int currentRotation, int currentPower);
 
 private:
     std::vector<int> _target;
@@ -39,7 +42,7 @@ PIDController::PIDController(int targetX, int targetY, int dT, double kP, double
     _target({targetX, targetY}), _kP(kP), _kI(kI), _kD(kD), _dT(dT), _previous_error({0, 0}), _integral_error({0, 0})
     {}
 
-Demand PIDController::calculateDemand(int currentX, int currentY) {
+Demand PIDController::calculateDemand(int currentX, int currentY, int currentVX, int currentVY, int currentRotation, int currentPower) {
     std::vector<int> pOut(2), iOut(2), dOut(2), power(2), error(2);
     int demandRotation, demandPower;
 
@@ -49,7 +52,7 @@ Demand PIDController::calculateDemand(int currentX, int currentY) {
     std::cerr << "targetX: " << _target[0] << ", currentX: " << currentX << ", errorX: " << error[0] << std::endl;
     std::cerr << "targetY: " << _target[1] << ", currentY: " << currentY << ", errorY: " << error[1] << std::endl;
 
-    pOut[0] = - error[0] * _kP;
+    pOut[0] = error[0] * _kP;
     pOut[1] = error[1] * _kP - GRAVITY;
 
     // Add integral term
@@ -59,13 +62,13 @@ Demand PIDController::calculateDemand(int currentX, int currentY) {
     iOut[1] += _integral_error[1] * _kI;
 
     // Add derivative term
-    dOut[0] = - ((error[0] - _previous_error[0]) / _dT) * _kD;
+    dOut[0] = ((error[0] - _previous_error[0]) / _dT) * _kD;
     dOut[1] = ((error[1] - _previous_error[1]) / _dT) * _kD;
     
     _previous_error[0] = error[0];
     _previous_error[1] = error[1];
     
-    power[0] = pOut[0] + iOut[0] + dOut[0];
+    power[0] = - (pOut[0] + iOut[0] + dOut[0]);  // X power is inverted compared to axis definiton
     power[1] = pOut[1] + iOut[1] + dOut[1];
     
     if (power[1] < 0) {power[1] = 0;}
@@ -77,11 +80,18 @@ Demand PIDController::calculateDemand(int currentX, int currentY) {
     if (power[0] == 0) {demandRotation = 0;}
     demandPower = sqrt(pow(power[0], 2) + pow(power[1], 2));
 
-    if (error[1] > -500) {
+    if (error[1] > -500 && abs(currentVX) <= MAX_VX) {
         // Land
         demandPower = 4;
         demandRotation = 0;
     }
+    
+    std::cerr << demandRotation << "/" << currentRotation << std::endl;
+    if (currentRotation != 0 && abs(demandRotation - currentRotation) > 150) {
+        // If rotation is currently not in the same direction as demand, send no power
+        demandPower = 0;
+    }
+    
     if (demandPower > 4) {demandPower = 4;}
     std::cerr << "demandRotation: " << demandRotation << ", demandPower: " << demandPower << std::endl;
 
@@ -133,7 +143,7 @@ int main()
     while (1) {
         std::cin >> X >> Y >> HS >> VS >> F >> R >> P; std::cin.ignore();
 
-        nextDemand = controller.calculateDemand(X, Y);
+        nextDemand = controller.calculateDemand(X, Y, HS, VS, R, P);
 
         std::cout << nextDemand.rotation << " " << nextDemand.power << std::endl;
     }

@@ -9,7 +9,7 @@
  * Use less Fossil Fuel.
  **/
  
-#define GRAVITY 3.711;
+#define GRAVITY -3.711;
 #define PI 3.14159265
  
 typedef struct Demand {
@@ -22,7 +22,7 @@ class PIDController {
 
 public:
     PIDController(int targetX, int targetY, int dT, double kP, double kI, double kD);
-    Demand calculateDemand(int currentX, int currentY);
+    Demand calculateDemand(int positionX, int positionY);
 
 private:
     std::vector<int> _target;
@@ -43,14 +43,14 @@ Demand PIDController::calculateDemand(int currentX, int currentY) {
     std::vector<int> pOut(2), iOut(2), dOut(2), power(2), error(2);
     int demandRotation, demandPower;
 
-    std::cerr << "targetX: " << _target[0] << ", currentX: " << currentX << std::endl;
-    std::cerr << "targetY: " << _target[1] << ", currentY: " << currentY << std::endl;
-
     error[0] = _target[0] - currentX;
     error[1] = _target[1] - currentY;
 
+    std::cerr << "targetX: " << _target[0] << ", currentX: " << currentX << ", errorX: " << error[0] << std::endl;
+    std::cerr << "targetY: " << _target[1] << ", currentY: " << currentY << ", errorY: " << error[1] << std::endl;
+
     pOut[0] = - error[0] * _kP;
-    pOut[1] = GRAVITY - error[1] * _kP;
+    pOut[1] = error[1] * _kP - GRAVITY;
 
     // Add integral term
     _integral_error[0] += error[0];
@@ -59,27 +59,35 @@ Demand PIDController::calculateDemand(int currentX, int currentY) {
     iOut[1] += _integral_error[1] * _kI;
 
     // Add derivative term
-    dOut[0] += ((error[0] - _previous_error[0]) / _dT) * _kD;
-    dOut[1] += ((error[1] - _previous_error[1]) / _dT) * _kD;
+    dOut[0] = - ((error[0] - _previous_error[0]) / _dT) * _kD;
+    dOut[1] = ((error[1] - _previous_error[1]) / _dT) * _kD;
     
     _previous_error[0] = error[0];
     _previous_error[1] = error[1];
     
     power[0] = pOut[0] + iOut[0] + dOut[0];
     power[1] = pOut[1] + iOut[1] + dOut[1];
+    
+    if (power[1] < 0) {power[1] = 0;}
 
     std::cerr << "powerX: " << power[0] << " (" << pOut[0] << " + " << iOut[0] << " + " << dOut[0] << ")" << std::endl;
     std::cerr << "powerY: " << power[1] << " (" << pOut[1] << " + " << iOut[1] << " + " << dOut[1] << ")" << std::endl;
     
-    demandRotation = atan((double) power[1] / (double) power[0]) * 180 / PI;
+    demandRotation = atan((double) power[0] / (double) power[1]) * 180 / PI;
     if (power[0] == 0) {demandRotation = 0;}
     demandPower = sqrt(pow(power[0], 2) + pow(power[1], 2));
 
+    if (error[1] > -500) {
+        // Land
+        demandPower = 4;
+        demandRotation = 0;
+    }
     if (demandPower > 4) {demandPower = 4;}
     std::cerr << "demandRotation: " << demandRotation << ", demandPower: " << demandPower << std::endl;
 
     return Demand{demandPower, demandRotation};
 }
+
 
 int main()
 {
@@ -124,8 +132,6 @@ int main()
     // game loop
     while (1) {
         std::cin >> X >> Y >> HS >> VS >> F >> R >> P; std::cin.ignore();
-
-        std::cerr << "Y: " << Y << std::endl;
 
         nextDemand = controller.calculateDemand(X, Y);
 

@@ -24,26 +24,21 @@ typedef struct Demand {
 class PIDController {
 
 public:
-    PIDController(int targetX, int targetY, int dT, double kP, double kI, double kD);
+    PIDController(int startX, int startY, int targetX, int targetY, double kP, double kV);
     Demand calculateDemand(int currentX, int currentY, int currentVX, int currentVY, int currentRotation, int currentPower);
 
 private:
     std::vector<int> _target;
     double _kP;
-    double _kI;
-    double _kD;
-    double _dT;
-    std::vector<int> _previous_error;
-    std::vector<int> _integral_error;
+    double _kV;
 };
 
 
-PIDController::PIDController(int targetX, int targetY, int dT, double kP, double kI, double kD) :
-    _target({targetX, targetY}), _kP(kP), _kI(kI), _kD(kD), _dT(dT), _previous_error({0, 0}), _integral_error({0, 0})
-    {}
+PIDController::PIDController(int startX, int startY, int targetX, int targetY, double kP, double kV) :
+        _target({targetX, targetY}), _kP(kP), _kV(kV) {}
 
 Demand PIDController::calculateDemand(int currentX, int currentY, int currentVX, int currentVY, int currentRotation, int currentPower) {
-    std::vector<int> pOut(2), iOut(2), dOut(2), power(2), error(2);
+    std::vector<int> pOut(2), vOut(2), power(2), error(2);
     int demandRotation, demandPower;
 
     error[0] = _target[0] - currentX;
@@ -52,49 +47,42 @@ Demand PIDController::calculateDemand(int currentX, int currentY, int currentVX,
     std::cerr << "targetX: " << _target[0] << ", currentX: " << currentX << ", errorX: " << error[0] << std::endl;
     std::cerr << "targetY: " << _target[1] << ", currentY: " << currentY << ", errorY: " << error[1] << std::endl;
 
+    // Add proportional (displacement) term - Moves lander towards target
     pOut[0] = error[0] * _kP;
     pOut[1] = error[1] * _kP - GRAVITY;
 
-    // Add integral term
-    _integral_error[0] += error[0];
-    _integral_error[1] += error[1];
-    iOut[0] += _integral_error[0] * _kI;
-    iOut[1] += _integral_error[1] * _kI;
+    // Add velocity term - Slows lander to zero velocity
+    vOut[0] = - currentVX * _kV;
+    vOut[1] = - currentVY * _kV;
 
-    // Add derivative term
-    dOut[0] = ((error[0] - _previous_error[0]) / _dT) * _kD;
-    dOut[1] = ((error[1] - _previous_error[1]) / _dT) * _kD;
-    
-    _previous_error[0] = error[0];
-    _previous_error[1] = error[1];
-    
-    power[0] = - (pOut[0] + iOut[0] + dOut[0]);  // X power is inverted compared to axis definiton
-    power[1] = pOut[1] + iOut[1] + dOut[1];
-    
-    if (power[1] < 0) {power[1] = 0;}
+    power[0] = - (pOut[0] + vOut[0]);  // X power is inverted compared to axis definition
+    power[1] = pOut[1] + vOut[1];
 
-    std::cerr << "powerX: " << power[0] << " (" << pOut[0] << " + " << iOut[0] << " + " << dOut[0] << ")" << std::endl;
-    std::cerr << "powerY: " << power[1] << " (" << pOut[1] << " + " << iOut[1] << " + " << dOut[1] << ")" << std::endl;
-    
+    power[1] = std::max(power[1], 0);  // If we want to drop, set vertical power to zero and leave it to gravity
+
+    std::cerr << "powerX: " << power[0] << " (" << pOut[0] << " + " << vOut[0] << ")" << std::endl;
+    std::cerr << "powerY: " << power[1] << " (" << pOut[1] << " + " << vOut[1] << ")" << std::endl;
+
+    // Calculate power and rotation demand
     demandRotation = atan((double) power[0] / (double) power[1]) * 180 / PI;
-    if (power[0] == 0) {demandRotation = 0;}
     demandPower = sqrt(pow(power[0], 2) + pow(power[1], 2));
 
+    // If we are close to the ground and VX is OK, prepare to land
     if (error[1] > -500 && abs(currentVX) <= MAX_VX) {
-        // Land
         demandPower = 4;
         demandRotation = 0;
     }
-    
-    std::cerr << demandRotation << "/" << currentRotation << std::endl;
-    if (currentRotation != 0 && abs(demandRotation - currentRotation) > 150) {
-        // If rotation is currently not in the same direction as demand, send no power
-        demandPower = 0;
-    }
-    
-    if (demandPower > 4) {demandPower = 4;}
-    std::cerr << "demandRotation: " << demandRotation << ", demandPower: " << demandPower << std::endl;
 
+    // Nerf power based on lag between demand and actual rotation to avoid accelerating in the wrong direction
+    if (currentRotation != 0 && abs(demandRotation - currentRotation) > 150) {
+        demandPower -= abs(demandRotation - currentRotation) / 30;
+    }
+
+    // Apply limits
+    demandPower = std::max(demandPower, 0);
+    demandPower = std::min(demandPower, 4);
+
+    std::cerr << "demandRotation: " << demandRotation << ", demandPower: " << demandPower << std::endl;
     return Demand{demandPower, demandRotation};
 }
 
@@ -121,30 +109,30 @@ int main()
     std::cin >> N; std::cin.ignore();
     std::vector<int> landscapeX(N), landscapeY(N);
     for (int i = 0; i < N; i++) {
-        std::cin >> landX >> landY; std::cin.ignore();
-        landscapeX[i] = landX;
-        landscapeY[i] = landY;
-        
-        std::cerr << "(" << landX << ", " << landY << ")";
-        
-        if (landY == landscapeY[i - 1]) {
-            landingZoneRight = landX;
+        std::cin >> landscapeX[i] >> landscapeY[i]; std::cin.ignore();
+
+        std::cerr << "(" << landscapeX[i] << ", " << landscapeY[i] << ")";
+
+        if (landscapeY[i] == landscapeY[i - 1]) {
+            landingZoneRight = landscapeX[i];
             landingZoneLeft = landscapeX[i - 1];
             landingZoneCentre = (landingZoneLeft + landingZoneRight) / 2;
-            landingZoneHeight = landY;
+            landingZoneHeight = landscapeY[i];
             std::cerr << " <-- Landing Zone";
         }
         std::cerr << std::endl;
     }
 
-    PIDController controller = PIDController(landingZoneCentre, landingZoneHeight, 1, 0.002, 0.0, 0.1);
+    std::cin >> X >> Y >> HS >> VS >> F >> R >> P; std::cin.ignore();
+    PIDController controller = PIDController(X, Y, landingZoneCentre, landingZoneHeight, 0.002, 0.1);
 
     // game loop
     while (1) {
-        std::cin >> X >> Y >> HS >> VS >> F >> R >> P; std::cin.ignore();
+        std::cerr << X << ", " << Y << ", " << HS << ", " << VS << ", " << F << ", " << R << ", " << P << std::endl;
 
         nextDemand = controller.calculateDemand(X, Y, HS, VS, R, P);
-
         std::cout << nextDemand.rotation << " " << nextDemand.power << std::endl;
+
+        std::cin >> X >> Y >> HS >> VS >> F >> R >> P; std::cin.ignore();
     }
 }

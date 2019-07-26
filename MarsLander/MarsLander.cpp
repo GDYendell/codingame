@@ -9,16 +9,33 @@
  * Use less Fossil Fuel.
  **/
  
-#define GRAVITY -3.711;
+#define GRAVITY -3.711
 #define PI 3.14159265
 
+#define MAX_POWER 4.0
 #define MAX_VX 20
 #define MAX_VY 40
+
+template <typename T> int signOf(T value) {
+    return (value > 0) - (value < 0);
+}
  
 typedef struct Demand {
-    int power;
-    int rotation;
+    double power;
+    double rotation;
 } Demand;
+
+
+Demand xyToDemand(double X, double Y) {
+    // Calculate power and rotation demand
+    double power, rotation;
+    power = sqrt(pow(X, 2) + pow(Y, 2));
+    rotation = atan((double) X / (double) Y) * 180 / PI;
+    // Apply limits
+    power = std::max(power, 0.0);
+    power = std::min(power, MAX_POWER);
+    return Demand{power, rotation};
+}
 
 
 class PIDController {
@@ -38,8 +55,7 @@ PIDController::PIDController(int startX, int startY, int targetX, int targetY, d
         _target({targetX, targetY}), _kP(kP), _kV(kV) {}
 
 Demand PIDController::calculateDemand(int currentX, int currentY, int currentVX, int currentVY, int currentRotation, int currentPower) {
-    std::vector<int> pOut(2), vOut(2), power(2), error(2);
-    int demandRotation, demandPower;
+    std::vector<double> pOut(2), vOut(2), power(2), error(2);
 
     error[0] = _target[0] - currentX;
     error[1] = _target[1] - currentY;
@@ -58,32 +74,46 @@ Demand PIDController::calculateDemand(int currentX, int currentY, int currentVX,
     power[0] = - (pOut[0] + vOut[0]);  // X power is inverted compared to axis definition
     power[1] = pOut[1] + vOut[1];
 
-    power[1] = std::max(power[1], 0);  // If we want to drop, set vertical power to zero and leave it to gravity
+    power[1] = std::max(power[1], 0.0);  // If we want to drop, set vertical power to zero and leave it to gravity
 
-    std::cerr << "powerX: " << power[0] << " (" << pOut[0] << " + " << vOut[0] << ")" << std::endl;
-    std::cerr << "powerY: " << power[1] << " (" << pOut[1] << " + " << vOut[1] << ")" << std::endl;
+    std::cerr << "powerX: " << power[0] << " (" << pOut[0] << " + " << vOut[0] << ")";
+    std::cerr << " powerY: " << power[1] << " (" << pOut[1] << " + " << vOut[1] << ")" << std::endl;
 
     // Calculate power and rotation demand
-    demandRotation = atan((double) power[0] / (double) power[1]) * 180 / PI;
-    demandPower = sqrt(pow(power[0], 2) + pow(power[1], 2));
+    Demand demand = xyToDemand(power[0], power[1]);
+
+    // If we are far from the landing zone, maintain height and go slow - set y force to -GRAVITY
+    if (fabs(error[0]) > fabs(error[1] / 2) && power[1] < fabs(GRAVITY)) {
+        power[1] = fabs(GRAVITY);
+        if (sqrt(pow(power[0], 2) + pow(power[1], 2)) > MAX_POWER) {
+            power[0] = signOf(power[0]) * sqrt(pow(MAX_POWER, 2) - pow(power[1], 2));
+        }
+        std::cerr << "[DISTANCE OVERIDE] powerX: " << power[0];
+        std::cerr << " powerY: " << power[1] << std::endl;
+        demand = xyToDemand(power[0], power[1]);
+    }
 
     // If we are close to the ground and VX is OK, prepare to land
-    if (error[1] > -500 && abs(currentVX) <= MAX_VX) {
-        demandPower = 4;
-        demandRotation = 0;
+    if (error[1] > -500 && fabs(currentVX) <= MAX_VX) {
+        if (currentVY <= -MAX_VY) {
+            demand.power = MAX_POWER;
+        } else {
+            demand.power = MAX_POWER - 1;
+        }
+        demand.rotation = 0;
     }
 
     // Nerf power based on lag between demand and actual rotation to avoid accelerating in the wrong direction
-    if (currentRotation != 0 && abs(demandRotation - currentRotation) > 150) {
-        demandPower -= abs(demandRotation - currentRotation) / 30;
+    if (currentRotation != 0 && fabs(demand.rotation - currentRotation) > 150) {
+        demand.power -= fabs(demand.rotation - currentRotation) / 30;
     }
 
     // Apply limits
-    demandPower = std::max(demandPower, 0);
-    demandPower = std::min(demandPower, 4);
+    demand.power = std::max(demand.power, 0.0);
+    demand.power = std::min(demand.power, MAX_POWER);
 
-    std::cerr << "demandRotation: " << demandRotation << ", demandPower: " << demandPower << std::endl;
-    return Demand{demandPower, demandRotation};
+    std::cerr << "demand.rotation: " << demand.rotation << ", demand.power: " << demand.power << std::endl;
+    return demand;
 }
 
 
@@ -131,7 +161,7 @@ int main()
         std::cerr << X << ", " << Y << ", " << HS << ", " << VS << ", " << F << ", " << R << ", " << P << std::endl;
 
         nextDemand = controller.calculateDemand(X, Y, HS, VS, R, P);
-        std::cout << nextDemand.rotation << " " << nextDemand.power << std::endl;
+        std::cout << round(nextDemand.rotation) << " " << round(nextDemand.power) << std::endl;
 
         std::cin >> X >> Y >> HS >> VS >> F >> R >> P; std::cin.ignore();
     }

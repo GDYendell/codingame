@@ -16,13 +16,21 @@
 #define MAX_VX 20
 #define MAX_VY 40
 #define LANDING_X_THRESHOLD 10.0
-#define LANDING_Y_THRESHOLD 1000.0
+#define LANDING_Y_THRESHOLD 1500.0
+#define OBSTACLE_CLEARANCE 5.0
 
 template <typename T> int signOf(T value) {
     return (value > 0) - (value < 0);
 }
+
+bool betweenPoints(int test, int A, int B) {
+    return (A < test && test < B) ||
+           (B < test && test < A);
+}
  
 typedef struct Demand {
+    double powerX;
+    double powerY;
     double power;
     double rotation;
 } Demand;
@@ -33,87 +41,105 @@ Demand xyToDemand(double X, double Y) {
     double power, rotation;
     power = sqrt(pow(X, 2) + pow(Y, 2));
     rotation = atan((double) X / (double) Y) * 180 / PI;
+
+    Demand demand = Demand{X, Y, power, rotation};
+
     // Apply limits
-    power = std::max(power, 0.0);
-    power = std::min(power, MAX_POWER);
-    return Demand{power, rotation};
+    if (power > MAX_POWER) {
+        demand.power = MAX_POWER;
+        demand.powerX = demand.power * sin(rotation * PI / 180);
+        demand.powerY = demand.power * cos(rotation * PI / 180);
+        std::cerr << "[POWER CAP OVERRIDE] powerX: " << demand.powerX << " powerY: " << demand.powerY << std::endl;
+    }
+
+    return demand;
 }
 
 
 class PIDController {
 
 public:
-    PIDController(int startX, int startY, int targetX, int targetY, double kP, double kV);
+    PIDController(int targetX, int targetY, std::vector<std::vector<int>> obstacles, double kPX, double kVX, double kPY, double kVY);
     Demand calculateDemand(int currentX, int currentY, int currentVX, int currentVY, int currentRotation, int currentPower, bool inLandingZone);
 
 private:
-    std::vector<int> _target;
-    double _kP;
-    double _kV;
+    int _targetX;
+    int _targetY;
+    std::vector<std::vector<int>> _obstacles;
+    double _kPX;
+    double _kVX;
+    double _kPY;
+    double _kVY;
 };
 
 
-PIDController::PIDController(int startX, int startY, int targetX, int targetY, double kP, double kV) :
-        _target({targetX, targetY}), _kP(kP), _kV(kV) {}
+PIDController::PIDController(int targetX, int targetY, std::vector<std::vector<int>> obstacles, double kPX, double kVX, double kPY, double kVY) :
+        _targetX(targetX), _targetY(targetY), _obstacles(obstacles), _kPX(kPX), _kVX(kVX), _kPY(kPY), _kVY(kVY) {}
 
 Demand PIDController::calculateDemand(int currentX, int currentY, int currentVX, int currentVY, int currentRotation, int currentPower, bool inLandingZone) {
-    std::vector<double> pOut(2), vOut(2), power(2), error(2);
+    double errorX, errorY, pOutX, pOutY, vOutX, vOutY, powerX, powerY;
 
-    error[0] = _target[0] - currentX;
-    error[1] = _target[1] - currentY;
+    errorX = _targetX - currentX;
+    int targetY = _targetY;
+    for (auto &obstacle : _obstacles) {  // Override target Y to avoid obstacles
+        if (betweenPoints(obstacle[0], currentX, _targetX)) {
+            if (obstacle[1] + OBSTACLE_CLEARANCE > targetY && obstacle[1] > currentY / 1.5) {
+                targetY = obstacle[1] + OBSTACLE_CLEARANCE;
+                std::cerr << "[OBSTACLE OVERRIDE] targetY: " << targetY << std::endl;
+            }
+        }
+    }
+    errorY = targetY - currentY;
 
-    std::cerr << "targetX: " << _target[0] << ", currentX: " << currentX << ", errorX: " << error[0] << std::endl;
-    std::cerr << "targetY: " << _target[1] << ", currentY: " << currentY << ", errorY: " << error[1] << std::endl;
+    std::cerr << "targetX: " << _targetX << ", currentX: " << currentX << ", errorX: " << errorX << std::endl;
+    std::cerr << "targetY: " << targetY << ", currentY: " << currentY << ", errorY: " << errorY << std::endl;
 
     // Add proportional (displacement) term - Moves lander towards target
-    pOut[0] = error[0] * _kP;
-    pOut[1] = error[1] * _kP - GRAVITY;
+    pOutX = errorX * _kPX;
+    pOutY = errorY * _kPY - GRAVITY;
 
     // Add velocity term - Slows lander to zero velocity
-    vOut[0] = - currentVX * _kV;
-    vOut[1] = - currentVY * _kV;
+    vOutX = - currentVX * _kVX;
+    vOutY = - currentVY * _kVY;
 
-    power[0] = - (pOut[0] + vOut[0]);  // X power is inverted compared to axis definition
-    power[1] = pOut[1] + vOut[1];
+    powerX = - (pOutX + vOutX);  // X power is inverted compared to axis definition
+    powerY = pOutY + vOutY;
 
-    power[1] = std::max(power[1], 0.0);  // If we want to drop, set vertical power to zero and leave it to gravity
+    powerY = std::max(powerY, 0.0);  // If we want to drop, set vertical power to zero and leave it to gravity
 
-    std::cerr << "powerX: " << power[0] << " (" << pOut[0] << " + " << vOut[0] << ")";
-    std::cerr << " powerY: " << power[1] << " (" << pOut[1] << " + " << vOut[1] << ")" << std::endl;
+    std::cerr << "powerX: " << powerX << " (" << pOutX << " + " << vOutX << ")";
+    std::cerr << " powerY: " << powerY << " (" << pOutY << " + " << vOutY << ")" << std::endl;
 
     // Calculate power and rotation demand
-    Demand demand = xyToDemand(power[0], power[1]);
+    Demand demand = xyToDemand(powerX, powerY);
 
     // If we are far from the landing zone, maintain height and go slow - set y force to -GRAVITY
-    if (fabs(error[0]) > std::max(fabs(error[1] / 1.05), LANDING_Y_THRESHOLD) &&  power[1] < fabs(GRAVITY)) {
-        power[1] = fabs(GRAVITY);
-        if (sqrt(pow(power[0], 2) + pow(power[1], 2)) > MAX_POWER) {
-            power[0] = signOf(power[0]) * sqrt(pow(MAX_POWER, 2) - pow(power[1], 2));
+    if (fabs(errorX) > std::max(5 * fabs(errorY), LANDING_Y_THRESHOLD) &&  demand.powerY < fabs(GRAVITY)) {
+        powerY = fabs(GRAVITY);
+        if (sqrt(pow(demand.powerX, 2) + pow(powerY, 2)) > MAX_POWER) {
+            powerX = signOf(demand.powerX) * sqrt(pow(MAX_POWER, 2) - pow(powerY, 2));
         }
-        std::cerr << "[DISTANCE OVERRIDE] powerX: " << power[0];
-        std::cerr << " powerY: " << power[1] << std::endl;
-        demand = xyToDemand(power[0], power[1]);
+        std::cerr << "[DISTANCE OVERRIDE] powerX: " << powerX << " powerY: " << powerY << std::endl;
+        demand = xyToDemand(powerX, powerY);
     }
 
     // If we are in the landing zone and VX is OK, prepare to land
-    if (inLandingZone && fabs(error[1]) < LANDING_Y_THRESHOLD && fabs(currentVX) <= MAX_VX) {
+    if (inLandingZone && fabs(errorY) < LANDING_Y_THRESHOLD && fabs(currentVX) <= MAX_VX) {
         std::cerr << "[LANDING OVERRIDE]" << std::endl;
         if (currentVY <= -MAX_VY) {
             demand.power = MAX_POWER;
         } else {
-            demand.power = MAX_POWER - 1;
+            demand.power = abs(currentVY) / 10;
         }
         demand.rotation = 0;
     }
 
     // Nerf power based on lag between demand and actual rotation to avoid accelerating in the wrong direction
     if (currentRotation != 0 && fabs(demand.rotation - currentRotation) > 150) {
+        std::cerr << "[ROTATION LAG OVERRIDE]" << std::endl;
         demand.power -= fabs(demand.rotation - currentRotation) / 30;
+        demand.power = std::max(demand.power, 0.0);
     }
-
-    // Apply limits
-    demand.power = std::max(demand.power, 0.0);
-    demand.power = std::min(demand.power, MAX_POWER);
 
     std::cerr << "demand.rotation: " << demand.rotation << ", demand.power: " << demand.power << std::endl;
     return demand;
@@ -135,31 +161,38 @@ int main()
     int landingZoneLeft, landingZoneRight, landingZoneCentre, landingZoneHeight;
     bool inLandingZone = false;
 
-    int direction;
-
     Demand nextDemand;
 
     int N; // the number of points used to draw the surface of Mars.
     std::cin >> N; std::cin.ignore();
-    std::vector<int> landscapeX(N), landscapeY(N);
+    std::vector<std::vector<int>> landscape(N, std::vector<int>(2));
     for (int i = 0; i < N; i++) {
-        std::cin >> landscapeX[i] >> landscapeY[i]; std::cin.ignore();
+        std::cin >> landscape[i][0] >> landscape[i][1]; std::cin.ignore();
+        std::cerr << "(" << landscape[i][0] << ", " << landscape[i][1] << ")";
 
-        std::cerr << "(" << landscapeX[i] << ", " << landscapeY[i] << ")";
-
-        if (landscapeY[i] == landscapeY[i - 1]) {
-            landingZoneRight = landscapeX[i];
-            landingZoneLeft = landscapeX[i - 1];
+        if (landscape[i][1] == landscape[i - 1][1]) {
+            landingZoneRight = landscape[i][0];
+            landingZoneLeft = landscape[i - 1][0];
             landingZoneCentre = (landingZoneLeft + landingZoneRight) / 2;
-            landingZoneHeight = landscapeY[i];
+            landingZoneHeight = landscape[i][1];
             std::cerr << " <-- Landing Zone";
         }
         std::cerr << std::endl;
     }
 
     std::cin >> X >> Y >> HS >> VS >> F >> R >> P; std::cin.ignore();
-    
-    PIDController controller = PIDController(X, Y, landingZoneCentre, landingZoneHeight, 0.002, 0.1);
+
+    std::vector<std::vector<int>> obstacles;
+    for (int i = 0; i < N; i++) {
+        if (betweenPoints(landscape[i][0], X, landingZoneCentre)) {
+            // Point is between start and target
+            if (landscape[i][1] > landingZoneHeight) {
+                obstacles.push_back(landscape[i]);
+            }
+        }
+    }
+
+    PIDController controller = PIDController(landingZoneCentre, landingZoneHeight, obstacles, 0.0027, 0.1, 0.002, 0.1);
 
     // game loop
     while (1) {

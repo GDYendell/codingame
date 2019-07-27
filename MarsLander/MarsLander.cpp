@@ -15,6 +15,8 @@
 #define MAX_POWER 4.0
 #define MAX_VX 20
 #define MAX_VY 40
+#define LANDING_X_THRESHOLD 10.0
+#define LANDING_Y_THRESHOLD 1000.0
 
 template <typename T> int signOf(T value) {
     return (value > 0) - (value < 0);
@@ -42,7 +44,7 @@ class PIDController {
 
 public:
     PIDController(int startX, int startY, int targetX, int targetY, double kP, double kV);
-    Demand calculateDemand(int currentX, int currentY, int currentVX, int currentVY, int currentRotation, int currentPower);
+    Demand calculateDemand(int currentX, int currentY, int currentVX, int currentVY, int currentRotation, int currentPower, bool inLandingZone);
 
 private:
     std::vector<int> _target;
@@ -54,7 +56,7 @@ private:
 PIDController::PIDController(int startX, int startY, int targetX, int targetY, double kP, double kV) :
         _target({targetX, targetY}), _kP(kP), _kV(kV) {}
 
-Demand PIDController::calculateDemand(int currentX, int currentY, int currentVX, int currentVY, int currentRotation, int currentPower) {
+Demand PIDController::calculateDemand(int currentX, int currentY, int currentVX, int currentVY, int currentRotation, int currentPower, bool inLandingZone) {
     std::vector<double> pOut(2), vOut(2), power(2), error(2);
 
     error[0] = _target[0] - currentX;
@@ -83,18 +85,19 @@ Demand PIDController::calculateDemand(int currentX, int currentY, int currentVX,
     Demand demand = xyToDemand(power[0], power[1]);
 
     // If we are far from the landing zone, maintain height and go slow - set y force to -GRAVITY
-    if (fabs(error[0]) > fabs(error[1] / 2) && power[1] < fabs(GRAVITY)) {
+    if (fabs(error[0]) > std::max(fabs(error[1] / 1.05), LANDING_Y_THRESHOLD) &&  power[1] < fabs(GRAVITY)) {
         power[1] = fabs(GRAVITY);
         if (sqrt(pow(power[0], 2) + pow(power[1], 2)) > MAX_POWER) {
             power[0] = signOf(power[0]) * sqrt(pow(MAX_POWER, 2) - pow(power[1], 2));
         }
-        std::cerr << "[DISTANCE OVERIDE] powerX: " << power[0];
+        std::cerr << "[DISTANCE OVERRIDE] powerX: " << power[0];
         std::cerr << " powerY: " << power[1] << std::endl;
         demand = xyToDemand(power[0], power[1]);
     }
 
-    // If we are close to the ground and VX is OK, prepare to land
-    if (error[1] > -500 && fabs(currentVX) <= MAX_VX) {
+    // If we are in the landing zone and VX is OK, prepare to land
+    if (inLandingZone && fabs(error[1]) < LANDING_Y_THRESHOLD && fabs(currentVX) <= MAX_VX) {
+        std::cerr << "[LANDING OVERRIDE]" << std::endl;
         if (currentVY <= -MAX_VY) {
             demand.power = MAX_POWER;
         } else {
@@ -130,6 +133,7 @@ int main()
     int landX; // X coordinate of a surface point. (0 to 6999)
     int landY; // Y coordinate of a surface point. By linking all the points together in a sequential fashion, you form the surface of Mars.
     int landingZoneLeft, landingZoneRight, landingZoneCentre, landingZoneHeight;
+    bool inLandingZone = false;
 
     int direction;
 
@@ -154,13 +158,15 @@ int main()
     }
 
     std::cin >> X >> Y >> HS >> VS >> F >> R >> P; std::cin.ignore();
+    
     PIDController controller = PIDController(X, Y, landingZoneCentre, landingZoneHeight, 0.002, 0.1);
 
     // game loop
     while (1) {
         std::cerr << X << ", " << Y << ", " << HS << ", " << VS << ", " << F << ", " << R << ", " << P << std::endl;
 
-        nextDemand = controller.calculateDemand(X, Y, HS, VS, R, P);
+        inLandingZone = X > landingZoneLeft + LANDING_X_THRESHOLD && X < landingZoneRight - LANDING_X_THRESHOLD;
+        nextDemand = controller.calculateDemand(X, Y, HS, VS, R, P, inLandingZone);
         std::cout << round(nextDemand.rotation) << " " << round(nextDemand.power) << std::endl;
 
         std::cin >> X >> Y >> HS >> VS >> F >> R >> P; std::cin.ignore();
